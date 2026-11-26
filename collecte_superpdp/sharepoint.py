@@ -1,13 +1,15 @@
-"""Écriture dans une bibliothèque SharePoint via Microsoft Graph (application Entra, client_credentials).
+"""Écriture dans le dossier SharePoint autorisé, via Microsoft Graph (application Entra, client_credentials).
 
-Permissions recommandées : Sites.Selected, avec un accès « write » accordé uniquement au site cible.
+L'application a la permission Files.SelectedOperations.Selected sur UN dossier : on l'adresse toujours
+par driveId + folderId (les chemins depuis la racine /root:/... et la recherche sur le site sont refusés).
 """
 
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 
 import requests
 
@@ -19,16 +21,13 @@ CHUNK = 5 * 1024 * 1024  # multiple de 320 Kio
 
 
 class SharePointDestination:
-    """Destination SharePoint : site + bibliothèque + dossier racine."""
-
     def __init__(
         self,
         tenant_id: str,
         client_id: str,
         client_secret: str,
-        site_url: str,
-        folder_path: str,
-        library: str | None = None,
+        drive_id: str,
+        folder_id: str,
         session: requests.Session | None = None,
     ):
         self.session = session or requests.Session()
@@ -36,13 +35,14 @@ class SharePointDestination:
         self._client_id = client_id
         self._client_secret = client_secret
         self._token: str | None = None
-        self.root = folder_path.strip("/")
-        self.drive_id = self._resolve_drive(site_url, library)
-        self._known_folders: set[str] = set()
+        self._token_expiry = 0.0
+        self.drive_id = drive_id
+        self.folder_id = folder_id
+        self._folder_ids: dict[tuple[str, ...], str] = {(): folder_id}
 
-    # --- Authentification -------------------------------------------------
+    # --- Authentification (jeton mis en cache jusqu'à expiration) ----------
     def _headers(self) -> dict:
-        if not self._token:
+        if not self._token or time.time() > self._token_expiry - 120:
             resp = request(
                 self.session,
                 "POST",
@@ -54,85 +54,75 @@ class SharePointDestination:
                     "scope": "https://graph.microsoft.com/.default",
                 },
             )
-            self._token = resp.json()["access_token"]
+            payload = resp.json()
+            self._token = payload["access_token"]
+            self._token_expiry = time.time() + int(payload.get("expires_in", 3599))
         return {"Authorization": f"Bearer {self._token}"}
 
     def _call(self, method: str, url: str, **kwargs) -> requests.Response:
         headers = {**self._headers(), **kwargs.pop("headers", {})}
         return request(self.session, method, url, headers=headers, **kwargs)
 
-    def _resolve_drive(self, site_url: str, library: str | None) -> str:
-        u = urlparse(site_url)
-        site = self._call("GET", f"{GRAPH}/sites/{u.hostname}:{u.path.rstrip('/')}").json()
-        if not library:
-            return self._call("GET", f"{GRAPH}/sites/{site['id']}/drive").json()["id"]
-        drives = self._call("GET", f"{GRAPH}/sites/{site['id']}/drives").json()["value"]
-        for drive in drives:
-            if drive["name"] == library:
-                return drive["id"]
-        raise ValueError(f"Bibliothèque « {library} » introuvable sur {site_url}")
+    def _item(self, item_id: str) -> str:
+        return f"{GRAPH}/drives/{self.drive_id}/items/{item_id}"
 
-    # --- Chemins ----------------------------------------------------------
-    def _full(self, segments: list[str]) -> str:
-        return "/".join([self.root, *segments]) if self.root else "/".join(segments)
-
-    def _item_url(self, path: str) -> str:
-        return f"{GRAPH}/drives/{self.drive_id}/root:/{quote(path)}:"
-
-    def _ensure_folder(self, segments: list[str]) -> None:
-        """Crée les dossiers manquants (avec cache pour limiter les appels)."""
-        parts = [p for p in self.root.split("/") if p] + segments
-        for i in range(1, len(parts) + 1):
-            path = "/".join(parts[:i])
-            if path in self._known_folders:
-                continue
-            parent = "/".join(parts[: i - 1])
-            parent_url = (
-                f"{GRAPH}/drives/{self.drive_id}/root/children"
-                if not parent
-                else f"{self._item_url(parent)}/children"
-            )
-            try:
-                self._call(
-                    "POST",
-                    parent_url,
-                    json={"name": parts[i - 1], "folder": {}, "@microsoft.graph.conflictBehavior": "fail"},
-                )
-            except requests.HTTPError as err:
-                if err.response is None or err.response.status_code != 409:  # 409 = existe déjà
-                    raise
-            self._known_folders.add(path)
+    # --- Dossiers ---------------------------------------------------------
+    def _folder(self, segments: list[str]) -> str:
+        """Id du sous-dossier (créé s'il n'existe pas), relatif au dossier autorisé."""
+        key: tuple[str, ...] = ()
+        parent = self.folder_id
+        for name in segments:
+            key = (*key, name)
+            if key not in self._folder_ids:
+                try:
+                    item = self._call(
+                        "POST",
+                        f"{self._item(parent)}/children",
+                        json={"name": name, "folder": {}, "@microsoft.graph.conflictBehavior": "fail"},
+                    ).json()
+                except requests.HTTPError as err:
+                    if err.response is None or err.response.status_code != 409:  # 409 = existe déjà
+                        raise
+                    item = self._call("GET", f"{self._item(parent)}:/{quote(name)}").json()
+                self._folder_ids[key] = item["id"]
+            parent = self._folder_ids[key]
+        return parent
 
     # --- Fichiers ---------------------------------------------------------
     def write(self, segments: list[str], content: bytes) -> str:
-        """Écrit (ou remplace) un fichier ; segments = dossiers + nom de fichier."""
-        self._ensure_folder(segments[:-1])
-        path = self._full(segments)
+        """Écrit (ou remplace) un fichier ; segments = sous-dossiers + nom de fichier."""
+        parent = self._folder(segments[:-1])
+        target = f"{self._item(parent)}:/{quote(segments[-1])}:"
         if len(content) <= SIMPLE_UPLOAD_MAX:
-            self._call("PUT", f"{self._item_url(path)}/content", data=content)
-            return path
-        session = self._call(
-            "POST",
-            f"{self._item_url(path)}/createUploadSession",
-            json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
-        ).json()
-        total = len(content)
-        for start in range(0, total, CHUNK):
-            chunk = content[start : start + CHUNK]
-            end = start + len(chunk) - 1
-            # L'URL de session est pré-authentifiée : pas d'en-tête Authorization.
-            request(
-                self.session,
+            self._call(
                 "PUT",
-                session["uploadUrl"],
-                data=chunk,
-                headers={"Content-Range": f"bytes {start}-{end}/{total}"},
+                f"{target}/content",
+                params={"@microsoft.graph.conflictBehavior": "replace"},
+                data=content,
+                headers={"Content-Type": "application/octet-stream"},
             )
-        return path
+        else:
+            upload = self._call(
+                "POST",
+                f"{target}/createUploadSession",
+                json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
+            ).json()
+            total = len(content)
+            for start in range(0, total, CHUNK):
+                chunk = content[start : start + CHUNK]
+                # L'URL de session est pré-authentifiée : pas d'en-tête Authorization.
+                request(
+                    self.session,
+                    "PUT",
+                    upload["uploadUrl"],
+                    data=chunk,
+                    headers={"Content-Range": f"bytes {start}-{start + len(chunk) - 1}/{total}"},
+                )
+        return "/".join(segments)
 
     def read_json(self, name: str) -> dict:
         try:
-            return self._call("GET", f"{self._item_url(self._full([name]))}/content").json()
+            return self._call("GET", f"{self._item(self.folder_id)}:/{quote(name)}:/content").json()
         except requests.HTTPError as err:
             if err.response is not None and err.response.status_code == 404:
                 return {}

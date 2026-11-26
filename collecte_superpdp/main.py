@@ -47,9 +47,8 @@ def _destination(dossier_local: str | None):
         tenant_id=_env("GRAPH_TENANT_ID"),
         client_id=_env("GRAPH_CLIENT_ID"),
         client_secret=_env("GRAPH_CLIENT_SECRET"),
-        site_url=_env("SHAREPOINT_SITE_URL"),
-        folder_path=os.environ.get("SHAREPOINT_FOLDER_PATH", ""),
-        library=os.environ.get("SHAREPOINT_LIBRARY") or None,
+        drive_id=_env("SHAREPOINT_DRIVE_ID"),
+        folder_id=_env("SHAREPOINT_FOLDER_ID"),
     )
 
 

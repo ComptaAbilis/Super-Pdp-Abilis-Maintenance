@@ -22,9 +22,8 @@ jobs:
       - run: python -m collecte_superpdp
         env:
           SUPERPDP_APPLICATIONS: ${{ secrets.SUPERPDP_APPLICATIONS }}
-          GRAPH_TENANT_ID: ${{ secrets.GRAPH_TENANT_ID }}
-          GRAPH_CLIENT_ID: ${{ secrets.GRAPH_CLIENT_ID }}
           GRAPH_CLIENT_SECRET: ${{ secrets.GRAPH_CLIENT_SECRET }}
-          SHAREPOINT_SITE_URL: ${{ vars.SHAREPOINT_SITE_URL }}
-          SHAREPOINT_LIBRARY: ${{ vars.SHAREPOINT_LIBRARY }}
-          SHAREPOINT_FOLDER_PATH: ${{ vars.SHAREPOINT_FOLDER_PATH }}
+          GRAPH_TENANT_ID: ${{ vars.GRAPH_TENANT_ID }}
+          GRAPH_CLIENT_ID: ${{ vars.GRAPH_CLIENT_ID }}
+          SHAREPOINT_DRIVE_ID: ${{ vars.SHAREPOINT_DRIVE_ID }}
+          SHAREPOINT_FOLDER_ID: ${{ vars.SHAREPOINT_FOLDER_ID }}

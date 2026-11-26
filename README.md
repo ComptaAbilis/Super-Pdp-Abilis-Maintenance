@@ -18,24 +18,27 @@ Si le SIRET n'est pas renseigné dans la facture, elle va dans `SIRET non rensei
 1. Pour chaque entreprise configurée, le script s'authentifie sur l'API SUPER PDP (OAuth `client_credentials`).
 2. Il liste les factures reçues (`GET /v1.beta/invoices?direction=in`) dont l'id est supérieur au dernier traité.
    Les id SUPER PDP sont strictement croissants : aucune facture n'est oubliée ni téléchargée deux fois.
-3. Il télécharge la facture (`GET /v1.beta/invoices/{id}?format=...`) et l'écrit dans SharePoint via Microsoft Graph.
+3. Il télécharge la facture (`GET /v1.beta/invoices/{id}?format=...`) et l'écrit dans le dossier SharePoint via Microsoft Graph.
 4. Le point de reprise est stocké dans SharePoint, dans `_collecte_superpdp_etat.json` à la racine du dossier.
 
 ## Accès nécessaires (jamais dans le dépôt)
 
-| Accès | Où le créer | Variable |
+| Accès | Où le trouver | Variable |
 |---|---|---|
-| Une application SUPER PDP **par entreprise** | SUPER PDP > Applications > Nouvelle application… | `SUPERPDP_APPLICATIONS` (liste JSON) |
-| Une application Microsoft Entra, permission Graph **Sites.Selected** + accès `write` au site | Service informatique (voir `docs/demande-informatique.md`) | `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET` |
-| Site et dossier SharePoint | — | `SHAREPOINT_SITE_URL`, `SHAREPOINT_LIBRARY` (vide = bibliothèque par défaut), `SHAREPOINT_FOLDER_PATH` |
+| Une application SUPER PDP **par entreprise** | SUPER PDP > Applications > Nouvelle application… | secret `SUPERPDP_APPLICATIONS` (liste JSON) |
+| Application Entra « WF Dossier SP Comptabilité » (`Files.SelectedOperations.Selected` sur un seul dossier) | Fiche technique de l'informatique | variables `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, secret `GRAPH_CLIENT_SECRET` |
+| Dossier « Connexions Externes pour automatisations » | Fiche technique, section 3 | variables `SHAREPOINT_DRIVE_ID`, `SHAREPOINT_FOLDER_ID` |
+
+Le dossier est toujours adressé par `driveId` + `folderId` : l'application n'a accès à rien d'autre.
+Le secret Entra expire : le renouveler auprès de l'administrateur Microsoft 365 au moins 30 jours avant.
 
 ## Exécution planifiée (GitHub Actions)
 
 Le workflow `.github/workflows/collecte.yml` tourne chaque jour à 5 h UTC et peut être lancé à la main (onglet *Actions* > *Run workflow*).
 Dans *Settings > Secrets and variables > Actions* :
 
-- **Secrets** : `SUPERPDP_APPLICATIONS`, `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET`
-- **Variables** : `SHAREPOINT_SITE_URL`, `SHAREPOINT_LIBRARY`, `SHAREPOINT_FOLDER_PATH`
+- **Secrets** : `SUPERPDP_APPLICATIONS`, `GRAPH_CLIENT_SECRET`
+- **Variables** : `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `SHAREPOINT_DRIVE_ID`, `SHAREPOINT_FOLDER_ID`
 
 ## Essai en local
 

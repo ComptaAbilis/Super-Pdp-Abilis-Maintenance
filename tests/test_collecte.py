@@ -88,3 +88,53 @@ def test_collecte_incrementale(tmp_path, monkeypatch):
     assert m.main(["--dossier-local", str(tmp_path)]) == 0
     assert set(appels) == {12}
     assert LocalDestination(str(tmp_path)).read_json(m.ETAT)["7"]["dernier_id"] == 12
+
+
+class FausseReponse:
+    def __init__(self, status=200, data=None):
+        self.status_code, self._data, self.headers, self.text = status, data or {}, {}, ""
+        self.ok = status < 400
+
+    def json(self):
+        return self._data
+
+
+class FausseSessionGraph:
+    """Simule Graph : dossiers créés par POST children, 409 si déjà existant."""
+
+    def __init__(self):
+        self.appels, self.existants, self.n = [], {"F0:2026-11": "EXIST"}, 0
+
+    def request(self, method, url, **kw):
+        self.appels.append((method, url))
+        if "login.microsoftonline.com" in url:
+            return FausseReponse(data={"access_token": "t", "expires_in": 3599})
+        if method == "POST" and url.endswith("/children"):
+            parent = url.split("/items/")[1].split("/")[0]
+            if f"{parent}:{kw['json']['name']}" in self.existants:
+                return FausseReponse(409)
+            self.n += 1
+            return FausseReponse(data={"id": f"F{self.n}"})
+        if method == "GET" and ":/" in url:
+            return FausseReponse(data={"id": "EXIST"})
+        return FausseReponse(data={})
+
+
+def test_sharepoint_adresse_par_drive_et_folder():
+    from collecte_superpdp.sharepoint import SharePointDestination
+
+    s = FausseSessionGraph()
+    dest = SharePointDestination("ten", "cid", "sec", "DRV", "F0", session=s)
+    dest.write(["2026-11", "Fourn A", "f 1.pdf"], b"x")
+    dest.write(["2026-11", "Fourn A", "f2.pdf"], b"x")  # dossiers en cache : pas de nouvel appel
+    urls = [u for m, u in s.appels if "graph" in u]
+    assert all(u.startswith("https://graph.microsoft.com/v1.0/drives/DRV/items/") for u in urls)
+    assert not any("/root" in u for u in urls)
+    assert urls == [
+        "https://graph.microsoft.com/v1.0/drives/DRV/items/F0/children",  # 2026-11 existe -> 409
+        "https://graph.microsoft.com/v1.0/drives/DRV/items/F0:/2026-11",
+        "https://graph.microsoft.com/v1.0/drives/DRV/items/EXIST/children",
+        "https://graph.microsoft.com/v1.0/drives/DRV/items/F1:/f%201.pdf:/content",
+        "https://graph.microsoft.com/v1.0/drives/DRV/items/F1:/f2.pdf:/content",
+    ]
+    assert sum("login" in u for _, u in s.appels) == 1  # jeton réutilisé

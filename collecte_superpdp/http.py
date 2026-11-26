@@ -4,7 +4,7 @@ import time
 
 import requests
 
-RETRY_STATUS = {429, 500, 502, 503, 504}
+RETRY_STATUS = {423, 429, 500, 502, 503, 504}  # 423 = fichier ouvert par un utilisateur
 
 
 def request(session: requests.Session, method: str, url: str, *, retries: int = 4, **kwargs) -> requests.Response:
