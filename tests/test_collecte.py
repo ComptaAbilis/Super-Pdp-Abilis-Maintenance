@@ -138,3 +138,30 @@ def test_sharepoint_adresse_par_drive_et_folder():
         "https://graph.microsoft.com/v1.0/drives/DRV/items/F1:/f2.pdf:/content",
     ]
     assert sum("login" in u for _, u in s.appels) == 1  # jeton réutilisé
+
+
+def test_jeton_superpdp_repli_basic_et_diagnostic():
+    import pytest
+    import requests as rq
+
+    from collecte_superpdp.superpdp import SuperPDPClient
+
+    class Session:
+        def __init__(self, accepte_basic):
+            self.accepte_basic, self.appels = accepte_basic, []
+
+        def request(self, method, url, **kw):
+            self.appels.append(kw)
+            if "auth" in kw and self.accepte_basic:
+                return FausseReponse(data={"access_token": "t", "expires_in": 3600})
+            return FausseReponse(401)
+
+    s = Session(accepte_basic=True)
+    c = SuperPDPClient(" id1 \n", "sec\n", session=s)
+    assert c._auth_headers() == {"Authorization": "Bearer t"}
+    assert s.appels[0]["data"]["client_id"] == "id1" and s.appels[1]["auth"] == ("id1", "sec")
+
+    with pytest.raises(rq.HTTPError) as e:
+        SuperPDPClient("XXX", "a b", session=Session(False))._auth_headers()
+    msg = str(e.value)
+    assert "MODÈLE NON REMPLI" in msg and "contient des espaces" in msg and "a b" not in msg
