@@ -1,0 +1,29 @@
+name: Collecte factures SUPER PDP
+
+on:
+  schedule:
+    - cron: "0 5 * * *" # tous les jours vers 6 h / 7 h (heure de Paris)
+  workflow_dispatch:
+
+concurrency:
+  group: collecte-superpdp
+  cancel-in-progress: false
+
+jobs:
+  collecte:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m collecte_superpdp
+        env:
+          SUPERPDP_APPLICATIONS: ${{ secrets.SUPERPDP_APPLICATIONS }}
+          GRAPH_CLIENT_SECRET: ${{ secrets.GRAPH_CLIENT_SECRET }}
+          GRAPH_TENANT_ID: ${{ vars.GRAPH_TENANT_ID }}
+          GRAPH_CLIENT_ID: ${{ vars.GRAPH_CLIENT_ID }}
+          SHAREPOINT_DRIVE_ID: ${{ vars.SHAREPOINT_DRIVE_ID }}
+          SHAREPOINT_FOLDER_ID: ${{ vars.SHAREPOINT_FOLDER_ID }}
