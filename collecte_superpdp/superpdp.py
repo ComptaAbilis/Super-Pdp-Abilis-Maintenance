@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Iterator
@@ -14,6 +16,8 @@ from typing import Iterator
 import requests
 
 from .http import request
+
+log = logging.getLogger(__name__)
 
 API_ROOT = "https://api.superpdp.tech"
 TOKEN_URL = f"{API_ROOT}/oauth2/token"
@@ -25,6 +29,26 @@ EXTENSIONS = {
     "text/xml": ".xml",
     "application/json": ".json",
 }
+
+
+
+def diagnostic(client_id: str, client_secret: str) -> str:
+    """Décrit la forme des identifiants sans révéler le secret."""
+
+    def forme(v: str) -> str:
+        notes = []
+        if not v or v.upper().strip('"') in {"XXX", "..."}:
+            notes.append("VIDE OU MODÈLE NON REMPLI")
+        if re.search(r"\s", v):
+            notes.append("contient des espaces")
+        if '"' in v or "'" in v:
+            notes.append("contient des guillemets")
+        return f"{len(v)} caractères" + (f" ({', '.join(notes)})" if notes else "")
+
+    return (
+        f"client_id = {forme(client_id)}, commence par « {client_id[:4]} » ; "
+        f"client_secret = {forme(client_secret)} ; identiques : {client_id == client_secret}"
+    )
 
 
 @dataclass
@@ -39,26 +63,39 @@ class InvoiceFile:
 
 class SuperPDPClient:
     def __init__(self, client_id: str, client_secret: str, session: requests.Session | None = None):
-        self.client_id = client_id
-        self.client_secret = client_secret
+        # Les copier-coller ajoutent souvent espaces ou retours à la ligne invisibles.
+        self.client_id = str(client_id).strip()
+        self.client_secret = str(client_secret).strip()
         self.session = session or requests.Session()
         self._token: str | None = None
         self._token_expiry = 0.0
 
     # --- Authentification -------------------------------------------------
+    def _request_token(self) -> dict:
+        """OAuth client_credentials : identifiants dans le corps (comme l'exemple officiel),
+        puis, si refusés, en en-tête HTTP Basic (client_secret_basic)."""
+        body = {"grant_type": "client_credentials"}
+        tentatives = [
+            ("corps", {"data": {**body, "client_id": self.client_id, "client_secret": self.client_secret}}),
+            ("basic", {"data": body, "auth": (self.client_id, self.client_secret)}),
+        ]
+        derniere = None
+        for nom, kwargs in tentatives:
+            try:
+                return request(self.session, "POST", TOKEN_URL, **kwargs).json()
+            except requests.HTTPError as err:
+                if err.response is None or err.response.status_code != 401:
+                    raise
+                log.warning("Jeton SUPER PDP refusé (méthode %s)", nom)
+                derniere = err
+        raise requests.HTTPError(
+            f"Identifiants SUPER PDP refusés. Diagnostic (sans valeur secrète) : {diagnostic(self.client_id, self.client_secret)}",
+            response=derniere.response,
+        )
+
     def _auth_headers(self) -> dict:
         if not self._token or time.time() > self._token_expiry - 60:
-            resp = request(
-                self.session,
-                "POST",
-                TOKEN_URL,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": self.client_id,
-                    "client_secret": self.client_secret,
-                },
-            )
-            payload = resp.json()
+            payload = self._request_token()
             self._token = payload["access_token"]
             self._token_expiry = time.time() + int(payload.get("expires_in", 3600))
         return {"Authorization": f"Bearer {self._token}"}
